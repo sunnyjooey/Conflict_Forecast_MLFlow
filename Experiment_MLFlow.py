@@ -3,7 +3,7 @@ import mlflow
 import databricks.automl_runtime
 
 # CHANGE ME
-EXP_ID = ""
+EXP_ID = "x"
 database_name = "news_media"
 data_table = "horn_africa_model_escbin_emb_confhist_lag_m41_gld"
 target_col = "binary_escalation_30"
