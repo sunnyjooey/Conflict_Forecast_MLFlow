@@ -318,7 +318,20 @@ def objective(params):
 
 # COMMAND ----------
 
-# the hyperparameter space
+"""
+TODO
+Model.compile: https://keras.io/api/models/model_training_apis/
+    optimizer
+Optimizers: https://keras.io/api/optimizers/
+    learning_rate, momentum
+Model.fit: https://keras.io/api/models/model_training_apis/
+    batch_size, epochs, sample_weight
+Consider also:
+    Dropout, more or less Dense layers
+See also: https://keras.io/guides/keras_tuner/getting_started/
+"""
+
+# the hyperparameter space 
 space = {
     "dense_l1": hp.quniform("dense_l1", 10, 30, 1),
     "dense_l2": hp.quniform("dense_l2", 10, 30, 1),
@@ -363,6 +376,73 @@ display(
 
 set_config(display="diagram")
 model
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Skipping model registration -- see auto generated notebooks for this code
+
+# COMMAND ----------
+
+# model_uri for the generated model
+print(f"runs:/{ mlflow_run.info.run_id }/model")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Confusion matrix, ROC and Precision-Recall curves for validation data
+# MAGIC
+# MAGIC We show the confusion matrix, ROC and Precision-Recall curves of the model on the validation data.
+# MAGIC
+# MAGIC For the plots evaluated on the training and the test data, check the artifacts on the MLflow run page.
+
+# COMMAND ----------
+
+# Click the link to see the MLflow run page
+displayHTML(f"<a href=#mlflow/experiments/{ EXP_ID }/runs/{ mlflow_run.info.run_id }/artifactPath/model> Link to model run page </a>")
+
+# COMMAND ----------
+
+import os
+import uuid
+from IPython.display import Image
+
+# Create temp directory to download MLflow model artifact
+eval_temp_dir = os.path.join(os.environ["SPARK_LOCAL_DIRS"], "tmp", str(uuid.uuid4())[:8])
+os.makedirs(eval_temp_dir, exist_ok=True)
+
+# Download the artifact
+eval_path = mlflow.artifacts.download_artifacts(run_id=mlflow_run.info.run_id, dst_path=eval_temp_dir)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Confusion matrix for validation dataset
+
+# COMMAND ----------
+
+eval_confusion_matrix_path = os.path.join(eval_path, "val_confusion_matrix.png")
+display(Image(filename=eval_confusion_matrix_path))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### ROC curve for validation dataset
+
+# COMMAND ----------
+
+eval_roc_curve_path = os.path.join(eval_path, "val_roc_curve_plot.png")
+display(Image(filename=eval_roc_curve_path))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Precision-Recall curve for validation dataset
+
+# COMMAND ----------
+
+eval_pr_curve_path = os.path.join(eval_path, "val_precision_recall_curve_plot.png")
+display(Image(filename=eval_pr_curve_path))
 
 # COMMAND ----------
 
