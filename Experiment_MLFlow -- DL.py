@@ -218,10 +218,9 @@ X_val_processed = pipeline_val.transform(X_val)
 
 
 # model builder
-def create_model(dense_l1, dense_l2, activation, theoptimizer):
+def create_model(dense_l1, activation, theoptimizer):
     model = Sequential()
     model.add(Dense(int(dense_l1), input_dim=INPUT_DIM, activation=activation))
-    model.add(Dense(int(dense_l2), activation=activation))
     model.add(Dense(1, activation="sigmoid"))
     model.compile(loss='binary_crossentropy', optimizer=theoptimizer, metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall()])
     return model
@@ -230,7 +229,7 @@ def create_model(dense_l1, dense_l2, activation, theoptimizer):
 def objective(params):
     with mlflow.start_run(experiment_id=EXP_ID) as mlflow_run:
         # classifier
-        clf = KerasClassifier(build_fn=create_model, dense_l1=params['dense_l1'], dense_l2=params['dense_l2'], activation=params['activation'], theoptimizer=params['opt'])
+        clf = KerasClassifier(build_fn=create_model, dense_l1=params['dense_l1'], activation=params['activation'], theoptimizer=params['opt'])
         # build pipeline
         model = Pipeline([
             ("column_selector", col_selector),
@@ -334,7 +333,6 @@ See also: https://keras.io/guides/keras_tuner/getting_started/
 # the hyperparameter space 
 space = {
     "dense_l1": hp.quniform("dense_l1", 10, 30, 1),
-    "dense_l2": hp.quniform("dense_l2", 10, 30, 1),
     "activation": hp.choice("activation", ["relu", "tanh"]),
     "opt": hp.choice("optimizer", ["Adadelta", "Adam"])
     }
