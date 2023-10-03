@@ -220,7 +220,11 @@ X_val_processed = pipeline_val.transform(X_val)
 # model builder
 def create_model(dense_l1, activation, theoptimizer):
     model = Sequential()
+    # input layer
     model.add(Dense(int(dense_l1), input_dim=INPUT_DIM, activation=activation))
+    # hidden layer 1 #
+    # hidden layer 2 #
+    # output layer
     model.add(Dense(1, activation="sigmoid"))
     model.compile(loss='binary_crossentropy', optimizer=theoptimizer, metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall()])
     return model
@@ -326,7 +330,7 @@ Optimizers: https://keras.io/api/optimizers/
 Model.fit: https://keras.io/api/models/model_training_apis/
     batch_size, epochs, sample_weight
 Consider also:
-    Dropout, more or less Dense layers
+    Dropout, L1/L2, more or less Dense layers
 See also: https://keras.io/guides/keras_tuner/getting_started/
 """
 
