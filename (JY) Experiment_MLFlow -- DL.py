@@ -430,9 +430,10 @@ space_dict = {
 
             'batch_size': [2**i for i in range(4,10)],
 
-            'epochs':  10,
+            'epochs':  50,
             'optimizer': ['adam', 'adadelta','rmsprop'],
-            'activation': 'relu'
+            'activation': 'relu',
+            'patience': 5
         }
 
 
@@ -458,12 +459,8 @@ def map_hyperparams(trials):
     
     return map_result
 
+print('the best param combo:')
 map_hyperparams(trials)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Skipping model registration -- see auto generated notebooks for this code
 
 # COMMAND ----------
 
@@ -478,30 +475,6 @@ print(f"runs:/{ mlflow_run.info.run_id }/model")
 # MAGIC We show the confusion matrix, ROC and Precision-Recall curves of the model on the validation data.
 # MAGIC
 # MAGIC For the plots evaluated on the training and the test data, check the artifacts on the MLflow run page.
-
-# COMMAND ----------
-
-trials.trials
-
-# COMMAND ----------
-
-import matplotlib.pyplot as plt
-
-# Assuming each trial's result is a dictionary with keys 'test_f1' and 'valid_f1'
-test_f1_scores = [trial['result']['test_metrics']['f1_score'] for trial in trials.trials]
-valid_f1_scores = [trial['result']['val_metrics']['f1_score'] for trial in trials.trials]
-
-# Plotting
-plt.figure(figsize=(12, 6))
-epochs = range(1, len(test_f1_scores) + 1)
-plt.plot(epochs, test_f1_scores, 'b', label='Test F1')
-plt.plot(epochs, valid_f1_scores, 'r', label='Validation F1')
-plt.title('Test and Validation F1 Score')
-plt.xlabel('Max eval')
-plt.ylabel('F1 Score')
-plt.legend()
-
-plt.show()
 
 # COMMAND ----------
 
