@@ -226,47 +226,7 @@ X_val_processed = pipeline_val.transform(X_val)
 
 
 # model builder
-"""
-def f_nn(params):   
-    from keras.models import Sequential
-    from keras.layers.core import Dense, Dropout, Activation
-    from keras.optimizers import Adadelta, Adam, rmsprop
 
-    print ('Params testing: ', params)
-    model = Sequential()
-    model.add(Dense(output_dim=params['units1'], input_dim = X.shape[1])) 
-    model.add(Activation(params['activation']))
-    model.add(Dropout(params['dropout1']))
-
-    model.add(Dense(output_dim=params['units2'], init = "glorot_uniform")) 
-    model.add(Activation(params['activation']))
-    model.add(Dropout(params['dropout2']))
-
-    if params['choice']['layers']== 'three':
-        model.add(Dense(output_dim=params['choice']['units3'], init = "glorot_uniform")) 
-        model.add(Activation(params['activation']))
-        model.add(Dropout(params['choice']['dropout3']))    
-
-    model.add(Dense(1))
-    model.add(Activation('sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer=params['optimizer'])
-    model.add(Dense(1))
-    model.add(Activation('sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer=params['optimizer'])
-
-    model.fit(X, y, nb_epoch=params['nb_epochs'], batch_size=params['batch_size'], verbose = 0)
-
-    pred_auc =model.predict_proba(X_val, batch_size = 128, verbose = 0)
-    acc = roc_auc_score(y_val, pred_auc)
-    print('AUC:', acc)
-    sys.stdout.flush() 
-    return {'loss': -acc, 'status': STATUS_OK}
-
-
-trials = Trials()
-best = fmin(f_nn, space, algo=tpe.suggest, max_evals=50, trials=trials)
-print('best: ', best)
-"""
 def create_model(params, input_dim=INPUT_DIM):
     
     model = Sequential()
@@ -290,9 +250,7 @@ def create_model(params, input_dim=INPUT_DIM):
 
 
 def objective(params):
-    """
-    class scikeras.wrappers.KerasRegressor(model=None, *, build_fn=None, warm_start=False, random_state=None, optimizer='rmsprop', loss=None, metrics=None, batch_size=None, validation_batch_size=None, verbose=1, callbacks=None, validation_split=0.0, shuffle=True, run_eagerly=False, epochs=1, **kwargs)
-    """
+
     with mlflow.start_run(experiment_id=EXP_ID) as mlflow_run:
         # classifier
         clf = KerasClassifier(build_fn=lambda: create_model(params))
@@ -419,10 +377,6 @@ space = {'choice': hp.choice('num_layers',
         }
 
 
-
-# COMMAND ----------
-
-2**8
 
 # COMMAND ----------
 
