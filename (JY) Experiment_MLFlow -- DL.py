@@ -1,0 +1,602 @@
+# Databricks notebook source
+### CHANGE ME ###
+EXP_ID = "750697199507070" 
+database_name = "news_media" # need to change
+data_table = "horn_africa_model_escbin_emb_confhist_lagpca_m61_gld" # need to change
+target_col = "binary_escalation_30" # need to change
+time_col = "STARTDATE"
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Load Data
+
+# COMMAND ----------
+
+spdf = spark.sql(f"SELECT * FROM {database_name}.{data_table}")
+df = spdf.toPandas()
+
+# COMMAND ----------
+
+### Split train-val-test 60-20-20 on date column
+import math
+
+# split date
+all_time = df[time_col].unique()
+all_time.sort()
+train_end = math.ceil(len(all_time) * 0.6)
+val_end = math.ceil(len(all_time) * 0.8)
+train_dt = all_time[ :train_end]
+val_dt = all_time[train_end:val_end]
+test_dt = all_time[val_end: ]
+
+# create col for splitting
+df['_automl_split_col_0000'] = ''
+df.loc[df[time_col].isin(train_dt), '_automl_split_col_0000'] = 'train'
+df.loc[df[time_col].isin(val_dt), '_automl_split_col_0000'] = 'val'
+df.loc[df[time_col].isin(test_dt), '_automl_split_col_0000'] = 'test'
+
+# COMMAND ----------
+
+# creat sample weights to counter the imbalance
+# hardcoding for now -- CHANGE ME LATER!
+
+df['_automl_sample_weight_0000'] = 1
+df.loc[(df['_automl_split_col_0000']=='train') & (df[target_col]==0), '_automl_sample_weight_0000'] = 1.4838198687485855
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Select supported columns
+# MAGIC Select only the columns that are supported. This allows us to train a model that can predict on a dataset that has extra columns that are not used in training.
+# MAGIC `[]` are dropped in the pipelines. See the Alerts tab of the AutoML Experiment page for details on why these columns are dropped.
+
+# COMMAND ----------
+
+from databricks.automl_runtime.sklearn.column_selector import ColumnSelector
+import numpy as np
+import pandas as pd
+
+conf_hist = ['Battles', 'Explosions_Remote_violence', 'Protests', 'Riots', 'Strategic_developments', 'Violence_against_civilians']
+embed = np.arange(50)
+static = ['mean_pop_dense_2020', 'conflict_trend_1', 'conflict_trend_2']
+
+# create t-x column names
+conf_hist = [f'{col}_t-{x}' for col in conf_hist for x in np.arange(1,5)]
+embed = [f'{col}_t-{x}' for col in embed for x in np.arange(1,5)]
+# column selector
+supported_cols = conf_hist + embed + static
+
+col_selector = ColumnSelector(supported_cols)
+
+# COMMAND ----------
+
+df.head()
+
+# COMMAND ----------
+
+# take out unneeded columns
+keep_cols = supported_cols + [target_col, '_automl_sample_weight_0000', '_automl_split_col_0000']
+df = df[keep_cols].copy()
+
+# COMMAND ----------
+
+display(df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Preprocessors
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Numerical columns
+# MAGIC
+# MAGIC Missing values for numerical columns are imputed with mean by default.
+
+# COMMAND ----------
+
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
+
+num_imputers = []
+num_imputers.append(("impute_mean", SimpleImputer(), supported_cols)) # not really needed, but doing it just in case
+
+numerical_pipeline = Pipeline(steps=[
+    ("converter", FunctionTransformer(lambda df: df.apply(pd.to_numeric, errors='coerce'))),
+    ("imputers", ColumnTransformer(num_imputers)),
+    ("standardizer", StandardScaler()),
+])
+
+numerical_transformers = [("numerical", numerical_pipeline, supported_cols)]
+
+# COMMAND ----------
+
+from sklearn.compose import ColumnTransformer
+
+transformers = numerical_transformers
+preprocessor = ColumnTransformer(transformers, remainder="passthrough", sparse_threshold=0)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Train - Validation - Test Split
+# MAGIC The input data is split by AutoML into 3 sets:
+# MAGIC - Train (60% of the dataset used to train the model)
+# MAGIC - Validation (20% of the dataset used to tune the hyperparameters of the model)
+# MAGIC - Test (20% of the dataset used to report the true performance of the model on an unseen dataset)
+# MAGIC
+# MAGIC `_automl_split_col_0000` contains the information of which set a given row belongs to.
+# MAGIC We use this column to split the dataset into the above 3 sets. 
+# MAGIC The column should not be used for training so it is dropped after split is done.
+# MAGIC
+# MAGIC Given that `STARTDATE` is provided as the `time_col`, the data is split based on time order,
+# MAGIC where the most recent data is split to the test data.
+
+# COMMAND ----------
+
+df_loaded = df
+# AutoML completed train - validation - test split internally and used _automl_split_col_0000 to specify the set
+split_train_df = df_loaded.loc[df_loaded._automl_split_col_0000 == "train"]
+split_val_df = df_loaded.loc[df_loaded._automl_split_col_0000 == "val"]
+split_test_df = df_loaded.loc[df_loaded._automl_split_col_0000 == "test"]
+
+# Separate target column from features and drop _automl_split_col_0000
+X_train = split_train_df.drop([target_col, "_automl_split_col_0000"], axis=1)
+y_train = split_train_df[target_col]
+
+X_val = split_val_df.drop([target_col, "_automl_split_col_0000"], axis=1)
+y_val = split_val_df[target_col]
+
+X_test = split_test_df.drop([target_col, "_automl_split_col_0000"], axis=1)
+y_test = split_test_df[target_col]
+
+# COMMAND ----------
+
+# AutoML balanced the data internally and use _automl_sample_weight_0000 to calibrate the probability distribution
+sample_weight = X_train.loc[:, "_automl_sample_weight_0000"].to_numpy()
+X_train = X_train.drop(["_automl_sample_weight_0000"], axis=1)
+X_val = X_val.drop(["_automl_sample_weight_0000"], axis=1)
+X_test = X_test.drop(["_automl_sample_weight_0000"], axis=1)
+
+# input dimension for first NN layer
+INPUT_DIM = X_train.shape[1]
+
+# COMMAND ----------
+
+INPUT_DIM
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Train classification model
+# MAGIC - Log relevant metrics to MLflow to track runs
+# MAGIC - All the runs are logged under [this MLflow experiment](#mlflow/experiments/4171730171948156)
+# MAGIC - Change the model parameters and re-run the training cell to log a different trial to the MLflow experiment
+# MAGIC - To view the full list of tunable hyperparameters, check the output of the cell below
+
+# COMMAND ----------
+
+!pip install scikeras
+
+# COMMAND ----------
+
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Dropout
+from tensorflow.keras.models import Sequential
+from keras.callbacks import EarlyStopping
+from scikeras.wrappers import KerasClassifier
+
+import sklearn
+from sklearn import set_config
+from sklearn.pipeline import Pipeline
+
+import mlflow
+import mlflow.keras
+import mlflow.tensorflow
+from mlflow.models import Model, infer_signature, ModelSignature
+from mlflow import pyfunc
+
+from hyperopt import hp, tpe, fmin, STATUS_OK, SparkTrials
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Define the objective function
+# MAGIC The objective function used to find optimal hyperparameters. By default, this notebook only runs
+# MAGIC this function once (`max_evals=1` in the `hyperopt.fmin` invocation) with fixed hyperparameters, but
+# MAGIC hyperparameters can be tuned by modifying `space`, defined below. `hyperopt.fmin` will then use this
+# MAGIC function's return value to search the space to minimize the loss.
+
+# COMMAND ----------
+
+# Create a separate pipeline to transform the validation dataset. This is used for early stopping.
+mlflow.sklearn.autolog(disable=True)
+pipeline_val = Pipeline([
+    ("column_selector", col_selector),
+    ("preprocessor", preprocessor),
+])
+pipeline_val.fit(X_train, y_train)
+X_val_processed = pipeline_val.transform(X_val)
+
+# COMMAND ----------
+
+
+# model builder
+"""
+def f_nn(params):   
+    from keras.models import Sequential
+    from keras.layers.core import Dense, Dropout, Activation
+    from keras.optimizers import Adadelta, Adam, rmsprop
+
+    print ('Params testing: ', params)
+    model = Sequential()
+    model.add(Dense(output_dim=params['units1'], input_dim = X.shape[1])) 
+    model.add(Activation(params['activation']))
+    model.add(Dropout(params['dropout1']))
+
+    model.add(Dense(output_dim=params['units2'], init = "glorot_uniform")) 
+    model.add(Activation(params['activation']))
+    model.add(Dropout(params['dropout2']))
+
+    if params['choice']['layers']== 'three':
+        model.add(Dense(output_dim=params['choice']['units3'], init = "glorot_uniform")) 
+        model.add(Activation(params['activation']))
+        model.add(Dropout(params['choice']['dropout3']))    
+
+    model.add(Dense(1))
+    model.add(Activation('sigmoid'))
+    model.compile(loss='binary_crossentropy', optimizer=params['optimizer'])
+    model.add(Dense(1))
+    model.add(Activation('sigmoid'))
+    model.compile(loss='binary_crossentropy', optimizer=params['optimizer'])
+
+    model.fit(X, y, nb_epoch=params['nb_epochs'], batch_size=params['batch_size'], verbose = 0)
+
+    pred_auc =model.predict_proba(X_val, batch_size = 128, verbose = 0)
+    acc = roc_auc_score(y_val, pred_auc)
+    print('AUC:', acc)
+    sys.stdout.flush() 
+    return {'loss': -acc, 'status': STATUS_OK}
+
+
+trials = Trials()
+best = fmin(f_nn, space, algo=tpe.suggest, max_evals=50, trials=trials)
+print('best: ', best)
+"""
+def create_model(params, input_dim=INPUT_DIM):
+    
+    model = Sequential()
+    # Input layer
+    model.add(Dense(int(params['dense_l0']), input_dim=input_dim, activation=params['activation']))
+
+    # 1st hidden layer
+    model.add(Dense(int(params['dense_l1']), activation=params['activation']))
+    model.add(Dropout(params['dropout1']))
+
+    # (optional) 2nd hidden layer
+    if params['choice']['layers'] == 'two':
+        model.add(Dense(int(params['choice']['dense_l2']), activation=params['activation']))
+        model.add(Dropout(params['choice']['dropout2']))
+
+    # Output layer
+    model.add(Dense(1, activation="sigmoid"))
+    model.compile(loss='binary_crossentropy', optimizer=params['optimizer'], metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall()])
+
+    return model
+
+
+def objective(params):
+    """
+    class scikeras.wrappers.KerasRegressor(model=None, *, build_fn=None, warm_start=False, random_state=None, optimizer='rmsprop', loss=None, metrics=None, batch_size=None, validation_batch_size=None, verbose=1, callbacks=None, validation_split=0.0, shuffle=True, run_eagerly=False, epochs=1, **kwargs)
+    """
+    with mlflow.start_run(experiment_id=EXP_ID) as mlflow_run:
+        # classifier
+        clf = KerasClassifier(build_fn=lambda: create_model(params))
+        # build pipeline
+        model = Pipeline([
+            ("column_selector", col_selector),
+            ("preprocessor", preprocessor),
+            ("classifier", clf),
+        ])
+
+        # Enable automatic logging of input samples, metrics, parameters, and models
+        mlflow.sklearn.autolog(
+            log_input_examples=True,
+            silent=True)
+
+        # fit the model
+        model.fit(X_train, y_train, classifier__epochs=params['epochs'], classifier__batch_size=params['batch_size'] , classifier__callbacks=[EarlyStopping(patience=params['patience'], monitor="val_loss")], classifier__validation_data=(X_val_processed, y_val), classifier__sample_weight=sample_weight)
+
+        # Log metrics for the training set
+        mlflow_model = Model()
+        pyfunc.add_to_model(mlflow_model, loader_module="mlflow.sklearn")
+        pyfunc_model = pyfunc.PyFuncModel(model_meta=mlflow_model, model_impl=model)
+        training_eval_result = mlflow.evaluate(
+            model=pyfunc_model,
+            data=X_train.assign(**{str(target_col):y_train}),
+            targets=target_col,
+            model_type="classifier",
+            evaluator_config = {"log_model_explainability": False,
+                                "metric_prefix": "training_" , "pos_label": 1, "sample_weight": sample_weight }
+        )
+        training_metrics = training_eval_result.metrics
+        # Log metrics for the validation set
+        val_eval_result = mlflow.evaluate(
+            model=pyfunc_model,
+            data=X_val.assign(**{str(target_col):y_val}),
+            targets=target_col,
+            model_type="classifier",
+            evaluator_config = {"log_model_explainability": False,
+                                "metric_prefix": "val_" , "pos_label": 1 }
+        )
+        val_metrics = val_eval_result.metrics
+        # Log metrics for the test set
+        test_eval_result = mlflow.evaluate(
+            model=pyfunc_model,
+            data=X_test.assign(**{str(target_col):y_test}),
+            targets=target_col,
+            model_type="classifier",
+            evaluator_config = {"log_model_explainability": False,
+                                "metric_prefix": "test_" , "pos_label": 1 }
+        )
+        test_metrics = test_eval_result.metrics
+
+        loss = -val_metrics["val_f1_score"]
+
+        # Truncate metric key names so they can be displayed together
+        val_metrics = {k.replace("val_", ""): v for k, v in val_metrics.items()}
+        test_metrics = {k.replace("test_", ""): v for k, v in test_metrics.items()}
+
+        return {
+        "loss": loss,
+        "status": STATUS_OK,
+        "val_metrics": val_metrics,
+        "test_metrics": test_metrics,
+        "model": model,
+        "run": mlflow_run,
+        }
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Configure the hyperparameter search space
+# MAGIC Configure the search space of parameters. Parameters below are all constant expressions but can be
+# MAGIC modified to widen the search space. For example, when training a decision tree classifier, to allow
+# MAGIC the maximum tree depth to be either 2 or 3, set the key of 'max_depth' to
+# MAGIC `hp.choice('max_depth', [2, 3])`. Be sure to also increase `max_evals` in the `fmin` call below.
+# MAGIC
+# MAGIC See https://docs.databricks.com/applications/machine-learning/automl-hyperparam-tuning/index.html
+# MAGIC for more information on hyperparameter tuning as well as
+# MAGIC http://hyperopt.github.io/hyperopt/getting-started/search_spaces/ for documentation on supported
+# MAGIC search expressions.
+# MAGIC
+# MAGIC For documentation on parameters used by the model in use, please see:
+# MAGIC https://lightgbm.readthedocs.io/en/stable/pythonapi/lightgbm.LGBMClassifier.html
+# MAGIC
+# MAGIC NOTE: The above URL points to a stable version of the documentation corresponding to the last
+# MAGIC released version of the package. The documentation may differ slightly for the package version
+# MAGIC used by this notebook.
+
+# COMMAND ----------
+
+"""
+TODO
+Model.compile: https://keras.io/api/models/model_training_apis/
+    optimizer
+Optimizers: https://keras.io/api/optimizers/
+    learning_rate, momentum
+Model.fit: https://keras.io/api/models/model_training_apis/
+    batch_size, epochs, sample_weight
+Consider also:
+    Dropout, more or less Dense layers
+See also: https://keras.io/guides/keras_tuner/getting_started/
+"""
+
+
+# the hyperparameter space
+space = {'choice': hp.choice('num_layers',
+                    [{'layers':'one', },
+                    {'layers':'two',
+                    'dense_l2': hp.choice('dense_l2', [2**i for i in range(6,10)]), 
+                    'dropout2': hp.uniform('dropout2', .25,.75)}
+                    ]),
+
+            'dense_l0': hp.choice('dense_l0', [2**i for i in range(6,10)]),
+            'dense_l1': hp.choice('dense_l1', [2**i for i in range(6,10)]),
+
+            'dropout1': hp.uniform('dropout1', .25,.75),
+
+            'batch_size' : hp.choice('batch_size', [2**i for i in range(4,10)]),
+
+            'epochs' :  50,
+            'optimizer': hp.choice('optimizer',['adam', 'adadelta','rmsprop']),
+            'activation': 'relu',
+            'patience': 5
+        }
+
+
+
+# COMMAND ----------
+
+2**8
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Run trials
+# MAGIC When widening the search space and training multiple models, switch to `SparkTrials` to parallelize
+# MAGIC training on Spark:
+# MAGIC ```
+# MAGIC from hyperopt import SparkTrials
+# MAGIC trials = SparkTrials()
+# MAGIC ```
+# MAGIC
+# MAGIC NOTE: While `Trials` starts an MLFlow run for each set of hyperparameters, `SparkTrials` only starts
+# MAGIC one top-level run; it will start a subrun for each set of hyperparameters.
+# MAGIC
+# MAGIC See http://hyperopt.github.io/hyperopt/scaleout/spark/ for more info.
+
+# COMMAND ----------
+
+# run trials
+trials = SparkTrials()
+fmin(objective,
+     space=space,
+     algo=tpe.suggest,
+     max_evals=100,  # Increase this when widening the hyperparameter search space.
+     trials=trials)
+
+best_result = trials.best_trial["result"]
+model = best_result["model"]
+mlflow_run = best_result["run"]
+
+display(
+  pd.DataFrame(
+    [best_result["val_metrics"], best_result["test_metrics"]],
+    index=["validation", "test"]))
+
+set_config(display="diagram")
+model
+
+# COMMAND ----------
+
+# Print the best hyper param combo
+space_dict = {
+            'num_layers': ['one', 'two'],
+            'dense_l0': [2**i for i in range(6,10)],
+            'dense_l1': [2**i for i in range(6,10)],
+            'dense_l2': [2**i for i in range(6,10)], 
+
+            'dropout1': None,
+            'dropout2': None,
+
+            'batch_size': [2**i for i in range(4,10)],
+
+            'epochs':  10,
+            'optimizer': ['adam', 'adadelta','rmsprop'],
+            'activation': 'relu'
+        }
+
+
+def map_hyperparams(trials):
+    idx_dict = trials.best_trial['misc']['vals']
+    map_result = dict()
+
+    for param, idx in idx_dict.items():
+        if param in ['dropout1', 'dropout2']:
+            map_result[param] = idx
+
+        else:
+            if len(idx) == 1 and space_dict[param] != None:
+                map_result[param] = space_dict[param][idx[0]]
+        
+            else:
+                map_result[param] = None
+        
+    
+    for param in space_dict.keys():
+        if param not in map_result.keys():
+            map_result[param] = space_dict[param]
+    
+    return map_result
+
+map_hyperparams(trials)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Skipping model registration -- see auto generated notebooks for this code
+
+# COMMAND ----------
+
+# model_uri for the generated model
+print(f"runs:/{ mlflow_run.info.run_id }/model")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Confusion matrix, ROC and Precision-Recall curves for validation data
+# MAGIC
+# MAGIC We show the confusion matrix, ROC and Precision-Recall curves of the model on the validation data.
+# MAGIC
+# MAGIC For the plots evaluated on the training and the test data, check the artifacts on the MLflow run page.
+
+# COMMAND ----------
+
+trials.trials
+
+# COMMAND ----------
+
+import matplotlib.pyplot as plt
+
+# Assuming each trial's result is a dictionary with keys 'test_f1' and 'valid_f1'
+test_f1_scores = [trial['result']['test_metrics']['f1_score'] for trial in trials.trials]
+valid_f1_scores = [trial['result']['val_metrics']['f1_score'] for trial in trials.trials]
+
+# Plotting
+plt.figure(figsize=(12, 6))
+epochs = range(1, len(test_f1_scores) + 1)
+plt.plot(epochs, test_f1_scores, 'b', label='Test F1')
+plt.plot(epochs, valid_f1_scores, 'r', label='Validation F1')
+plt.title('Test and Validation F1 Score')
+plt.xlabel('Max eval')
+plt.ylabel('F1 Score')
+plt.legend()
+
+plt.show()
+
+# COMMAND ----------
+
+# Click the link to see the MLflow run page
+displayHTML(f"<a href=#mlflow/experiments/{ EXP_ID }/runs/{ mlflow_run.info.run_id }/artifactPath/model> Link to model run page </a>")
+
+# COMMAND ----------
+
+import os
+import uuid
+from IPython.display import Image
+
+# Create temp directory to download MLflow model artifact
+eval_temp_dir = os.path.join(os.environ["SPARK_LOCAL_DIRS"], "tmp", str(uuid.uuid4())[:8])
+os.makedirs(eval_temp_dir, exist_ok=True)
+
+# Download the artifact
+eval_path = mlflow.artifacts.download_artifacts(run_id=mlflow_run.info.run_id, dst_path=eval_temp_dir)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Confusion matrix for validation dataset
+
+# COMMAND ----------
+
+eval_confusion_matrix_path = os.path.join(eval_path, "val_confusion_matrix.png")
+display(Image(filename=eval_confusion_matrix_path))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### ROC curve for validation dataset
+
+# COMMAND ----------
+
+eval_roc_curve_path = os.path.join(eval_path, "val_roc_curve_plot.png")
+display(Image(filename=eval_roc_curve_path))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Precision-Recall curve for validation dataset
+
+# COMMAND ----------
+
+eval_pr_curve_path = os.path.join(eval_path, "val_precision_recall_curve_plot.png")
+display(Image(filename=eval_pr_curve_path))
+
+# COMMAND ----------
+
+
