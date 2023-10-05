@@ -177,7 +177,7 @@ INPUT_DIM = X_train.shape[1]
 # COMMAND ----------
 
 import tensorflow as tf
-from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.models import Sequential
 from keras.callbacks import EarlyStopping
 from scikeras.wrappers import KerasClassifier
@@ -218,12 +218,21 @@ X_val_processed = pipeline_val.transform(X_val)
 
 
 # model builder
-def create_model(dense_l1, activation, theoptimizer):
+def create_model(layer_choice, units0, units1, dropout1, activation, theoptimizer):
     model = Sequential()
     # input layer
-    model.add(Dense(int(dense_l1), input_dim=INPUT_DIM, activation=activation))
-    # hidden layer 1 #
-    # hidden layer 2 #
+    model.add(Dense(int(units0), input_dim=INPUT_DIM, activation=activation))
+    # hidden layers #
+    model.add(Dense(int(units1), activation=activation))
+    model.add(Dropout(dropout1))
+    if layer_choice['layers'] == 'two':
+        model.add(Dense(int(layer_choice['units2']), activation=activation))
+        model.add(Dropout(layer_choice['dropout2']))
+    elif layer_choice['layers'] == 'three':
+        model.add(Dense(int(layer_choice['units2_']), activation=activation))
+        model.add(Dropout(layer_choice['dropout2_']))
+        model.add(Dense(int(layer_choice['units3']), activation=activation))
+        model.add(Dropout(layer_choice['dropout3']))
     # output layer
     model.add(Dense(1, activation="sigmoid"))
     model.compile(loss='binary_crossentropy', optimizer=theoptimizer, metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall()])
@@ -233,7 +242,7 @@ def create_model(dense_l1, activation, theoptimizer):
 def objective(params):
     with mlflow.start_run(experiment_id=EXP_ID) as mlflow_run:
         # classifier
-        clf = KerasClassifier(build_fn=create_model, dense_l1=params['dense_l1'], activation=params['activation'], theoptimizer=params['opt'])
+        clf = KerasClassifier(build_fn=create_model, layer_choice=params['choice'], units0=params['units0'], units1=params['units1'], dropout1=params['dropout1'], activation=params['activation'], theoptimizer=params['opt'])
         # build pipeline
         model = Pipeline([
             ("column_selector", col_selector),
@@ -247,7 +256,7 @@ def objective(params):
             silent=True)
 
         # fit the model
-        model.fit(X_train, y_train, classifier__callbacks=EarlyStopping(patience=5, monitor="val_loss"), classifier__validation_data=(X_val_processed, y_val), classifier__sample_weight=sample_weight)
+        model.fit(X_train, y_train, classifier__batch_size=params['batch_size'], classifier__epochs=100, classifier__callbacks=EarlyStopping(patience=10, monitor="val_loss"), classifier__validation_data=(X_val_processed, y_val), classifier__sample_weight=sample_weight)
 
         # Log metrics for the training set
         mlflow_model = Model()
@@ -324,9 +333,8 @@ def objective(params):
 """
 TODO
 Model.compile: https://keras.io/api/models/model_training_apis/
-    optimizer
 Optimizers: https://keras.io/api/optimizers/
-    learning_rate, momentum
+    optimizer, learning_rate, momentum
 Model.fit: https://keras.io/api/models/model_training_apis/
     batch_size, epochs, sample_weight
 Consider also:
@@ -334,12 +342,27 @@ Consider also:
 See also: https://keras.io/guides/keras_tuner/getting_started/
 """
 
-# the hyperparameter space 
-space = {
-    "dense_l1": hp.quniform("dense_l1", 10, 30, 1),
-    "activation": hp.choice("activation", ["relu", "tanh"]),
-    "opt": hp.choice("optimizer", ["Adadelta", "Adam"])
-    }
+space = {'choice': hp.choice('num_layers',
+                    [
+                        {'layers':'one'},
+                        {'layers':'two',
+                         'units2': hp.choice('units2', [126, 256, 512, 1024]),
+                         'dropout2': hp.uniform('dropout2', .25, .5)
+                         },
+                        {'layers':'three',
+                         'units2_': hp.choice('units2_', [126, 256, 512, 1024]),
+                         'dropout2_': hp.uniform('dropout2_', .25, .5),
+                         'units3': hp.choice('units3', [126, 256, 512, 1024]),
+                         'dropout3': hp.uniform('dropout3', .25, .5)
+                         }
+                    ]),
+         'units0': hp.choice('units0', [126, 256, 512, 1024]),
+         'units1': hp.choice('units1', [126, 256, 512, 1024]),
+         'dropout1': hp.uniform('dropout1', .25, .5),
+         'activation': hp.choice('activation', ['relu', 'tanh']),
+         'opt': hp.choice('optimizer', ['adam', 'rmsprop']),
+         'batch_size': hp.choice('batch_size', [16, 32, 64])
+        }
 
 # COMMAND ----------
 
@@ -364,7 +387,7 @@ trials = SparkTrials()
 fmin(objective,
      space=space,
      algo=tpe.suggest,
-     max_evals=1,  # Increase this when widening the hyperparameter search space.
+     max_evals=20,  # Increase this when widening the hyperparameter search space.
      trials=trials)
 
 best_result = trials.best_trial["result"]
