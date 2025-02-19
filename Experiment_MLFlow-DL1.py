@@ -387,7 +387,7 @@ trials = SparkTrials()
 fmin(objective,
      space=space,
      algo=tpe.suggest,
-     max_evals=20,  # Increase this when widening the hyperparameter search space.
+     max_evals=50,  # Increase this when widening the hyperparameter search space.
      trials=trials)
 
 best_result = trials.best_trial["result"]
@@ -401,6 +401,27 @@ display(
 
 set_config(display="diagram")
 model
+
+# COMMAND ----------
+
+idx_dict = trials.best_trial['misc']['vals']
+idx_dict
+
+# COMMAND ----------
+
+'activation': ['tanh'],
+ 'batch_size': [16],
+ 'dropout1': [0.41366723737132494],
+ 'dropout2': [],
+ 'dropout2_': [0.2525868010081352],
+ 'dropout3': [0.49987046576672245],
+ 'num_layers': ['three'],
+ 'optimizer': ['rmsprop'],
+ 'units0': [512],
+ 'units1': [512],
+ 'units2': [],
+ 'units2_': [256],
+ 'units3': [1024]
 
 # COMMAND ----------
 
